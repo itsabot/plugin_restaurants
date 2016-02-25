@@ -11,12 +11,12 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/garyburd/go-oauth/oauth"
+	"github.com/itsabot/abot/shared/datatypes"
+	"github.com/itsabot/abot/shared/knowledge"
+	"github.com/itsabot/abot/shared/language"
+	"github.com/itsabot/abot/shared/nlp"
+	"github.com/itsabot/abot/shared/pkg"
 	"github.com/jmoiron/sqlx"
-	"itsabot.org/abot/shared/datatypes"
-	"itsabot.org/abot/shared/knowledge"
-	"itsabot.org/abot/shared/language"
-	"itsabot.org/abot/shared/nlp"
-	"itsabot.org/abot/shared/pkg"
 )
 
 type Yelp string
