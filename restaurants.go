@@ -9,17 +9,17 @@ import (
 	"os"
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/garyburd/go-oauth/oauth"
 	"github.com/itsabot/abot/shared/datatypes"
 	"github.com/itsabot/abot/shared/knowledge"
 	"github.com/itsabot/abot/shared/language"
+	"github.com/itsabot/abot/shared/log"
 	"github.com/itsabot/abot/shared/nlp"
 	"github.com/itsabot/abot/shared/pkg"
 	"github.com/jmoiron/sqlx"
 )
 
-type Yelp string
+type Restaurant string
 
 type client struct {
 	client oauth.Client
@@ -46,13 +46,16 @@ var ErrNoBusinesses = errors.New("no businesses")
 var c client
 var db *sqlx.DB
 var p *pkg.Pkg
-var l *log.Entry
+var l *log.Logger
+
+const pkgName string = "restaurant"
 
 func main() {
 	var coreaddr string
 	flag.StringVar(&coreaddr, "coreaddr", "",
 		"Port used to communicate with Abot.")
 	flag.Parse()
+	l = log.New(pkgName)
 	c.client.Credentials.Token = os.Getenv("YELP_CONSUMER_KEY")
 	c.client.Credentials.Secret = os.Getenv("YELP_CONSUMER_SECRET")
 	c.token.Token = os.Getenv("YELP_TOKEN")
@@ -60,7 +63,7 @@ func main() {
 	var err error
 	db, err = pkg.ConnectDB()
 	if err != nil {
-		l.Fatalln(err)
+		l.Fatal(err)
 	}
 	trigger := &nlp.StructuredInput{
 		Commands: []string{
@@ -73,17 +76,17 @@ func main() {
 		},
 		Objects: language.Foods(),
 	}
-	p, err = pkg.NewPackage("yelp", coreaddr, trigger)
+	p, err = pkg.NewPackage(pkgName, coreaddr, trigger)
 	if err != nil {
-		l.Fatalln("building", err)
+		l.Fatal("building", err)
 	}
-	yelp := new(Yelp)
-	if err := p.Register(yelp); err != nil {
-		l.Fatalln("registering", err)
+	restaurant := new(Restaurant)
+	if err := p.Register(restaurant); err != nil {
+		l.Fatal("registering", err)
 	}
 }
 
-func (t *Yelp) Run(m *dt.Msg, resp *string) error {
+func (t *Restaurant) Run(m *dt.Msg, resp *string) error {
 	m.State = map[string]interface{}{
 		"query":      "",
 		"location":   "",
@@ -125,19 +128,19 @@ func (t *Yelp) Run(m *dt.Msg, resp *string) error {
 		m.State["location"] = loc.Name
 	}
 	if err := t.searchYelp(m, resp); err != nil {
-		l.WithField("fn", "searchYelp").Errorln(err)
+		return err
 	}
 	return nil
 }
 
 // FollowUp handles dialog question/answers and additional user queries
-func (t *Yelp) FollowUp(m *dt.Msg, resp *string) error {
+func (t *Restaurant) FollowUp(m *dt.Msg, resp *string) error {
 	// First we handle dialog. If we asked for a location, use the response
 	if m.State["location"] == "" {
 		// TODO smarter location detection, handling
 		m.State["location"] = m.Sentence
 		if err := t.searchYelp(m, resp); err != nil {
-			l.WithField("fn", "searchYelp").Errorln(err)
+			return err
 		}
 		return nil
 	}
@@ -187,7 +190,7 @@ func (t *Yelp) FollowUp(m *dt.Msg, resp *string) error {
 		case "not", "else", "no", "anything", "something":
 			m.State["offset"] = float64(offI + 1)
 			if err := t.searchYelp(m, resp); err != nil {
-				l.WithField("fn", "searchYelp").Errorln(err)
+				return err
 			}
 		// TODO perhaps handle this case and "thanks" at the Abot level?
 		// with bayesian classification
@@ -247,15 +250,11 @@ func (c *client) get(urlStr string, params url.Values, v interface{}) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-func (t *Yelp) searchYelp(m *dt.Msg, resp *string) error {
+func (t *Restaurant) searchYelp(m *dt.Msg, resp *string) error {
 	q := m.State["query"].(string)
 	loc := m.State["location"].(string)
 	offset := m.State["offset"].(float64)
-	l.WithFields(log.Fields{
-		"q":      q,
-		"loc":    loc,
-		"offset": offset,
-	}).Infoln("searching yelp")
+	l.Debugf("searching Yelp for %s at %s with offset %.0f", q, loc, offset)
 	form := url.Values{
 		"term":     {q},
 		"location": {loc},
@@ -267,7 +266,6 @@ func (t *Yelp) searchYelp(m *dt.Msg, resp *string) error {
 		/*
 			m.Sentence = "I can't find that for you now. " +
 				"Let's try again later."
-			l.WithField("fn", "get").Errorln(err)
 			return err
 		*/
 		// return for confused response, given Yelp errors are rare, but
