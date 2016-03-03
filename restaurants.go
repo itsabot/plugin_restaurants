@@ -15,7 +15,7 @@ import (
 	"github.com/itsabot/abot/shared/language"
 	"github.com/itsabot/abot/shared/log"
 	"github.com/itsabot/abot/shared/nlp"
-	"github.com/itsabot/abot/shared/pkg"
+	"github.com/itsabot/abot/shared/plugin"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -45,23 +45,23 @@ var ErrNoBusinesses = errors.New("no businesses")
 
 var c client
 var db *sqlx.DB
-var p *pkg.Pkg
+var p *plugin.Plugin
 var l *log.Logger
 
-const pkgName string = "restaurant"
+const pluginName string = "restaurant"
 
 func main() {
 	var coreaddr string
 	flag.StringVar(&coreaddr, "coreaddr", "",
 		"Port used to communicate with Abot.")
 	flag.Parse()
-	l = log.New(pkgName)
+	l = log.New(pluginName)
 	c.client.Credentials.Token = os.Getenv("YELP_CONSUMER_KEY")
 	c.client.Credentials.Secret = os.Getenv("YELP_CONSUMER_SECRET")
 	c.token.Token = os.Getenv("YELP_TOKEN")
 	c.token.Secret = os.Getenv("YELP_TOKEN_SECRET")
 	var err error
-	db, err = pkg.ConnectDB()
+	db, err = plugin.ConnectDB()
 	if err != nil {
 		l.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func main() {
 		},
 		Objects: language.Foods(),
 	}
-	p, err = pkg.NewPackage(pkgName, coreaddr, trigger)
+	p, err = plugin.NewPlugin(pkgName, coreaddr, trigger)
 	if err != nil {
 		l.Fatal("building", err)
 	}
@@ -152,7 +152,7 @@ func (t *Restaurant) FollowUp(m *dt.Msg, resp *string) error {
 		return nil
 	}
 
-	// Responses were returned, and the user has asked this package an
+	// Responses were returned, and the user has asked this plugin an
 	// additional query. Handle the query by keyword
 	words := strings.Fields(*resp)
 	offI := int(m.State["offset"].(float64))
