@@ -1,25 +1,20 @@
-package main
+package restaurants
 
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 
 	"github.com/garyburd/go-oauth/oauth"
+	"github.com/itsabot/abot/core/log"
 	"github.com/itsabot/abot/shared/datatypes"
-	"github.com/itsabot/abot/shared/knowledge"
 	"github.com/itsabot/abot/shared/language"
-	"github.com/itsabot/abot/shared/log"
-	"github.com/itsabot/abot/shared/nlp"
 	"github.com/itsabot/abot/shared/plugin"
-	"github.com/jmoiron/sqlx"
+	"github.com/itsabot/abot/shared/prefs"
+	"github.com/itsabot/abot/shared/task"
 )
-
-type Restaurant string
 
 type client struct {
 	client oauth.Client
@@ -44,114 +39,151 @@ type yelpResp struct {
 var ErrNoBusinesses = errors.New("no businesses")
 
 var c client
-var db *sqlx.DB
-var p *plugin.Plugin
-var l *log.Logger
+var p *dt.Plugin
+var foodMap map[string]struct{} = map[string]struct{}{}
 
-const pluginName string = "restaurant"
-
-func main() {
-	var coreaddr string
-	flag.StringVar(&coreaddr, "coreaddr", "",
-		"Port used to communicate with Abot.")
-	flag.Parse()
-	l = log.New(pluginName)
+func init() {
 	c.client.Credentials.Token = os.Getenv("YELP_CONSUMER_KEY")
 	c.client.Credentials.Secret = os.Getenv("YELP_CONSUMER_SECRET")
 	c.token.Token = os.Getenv("YELP_TOKEN")
 	c.token.Secret = os.Getenv("YELP_TOKEN_SECRET")
+	for _, food := range language.Foods() {
+		foodMap[food] = struct{}{}
+	}
 	var err error
-	db, err = plugin.ConnectDB()
+	p, err = plugin.New("github.com/itsabot/plugin_restaurants")
 	if err != nil {
-		l.Fatal(err)
+		log.Fatal("building", err)
 	}
-	trigger := &nlp.StructuredInput{
-		Commands: []string{
-			"find",
-			"where",
-			"show",
-			"recommend",
-			"recommendation",
-			"recommendations",
+	plugin.SetKeywords(p,
+		dt.KeywordHandler{
+			Fn: kwGetRestaurant,
+			Trigger: &dt.StructuredInput{
+				Commands: []string{
+					"find",
+					"what",
+					"where",
+					"show",
+					"recommend",
+					"recommendation",
+				},
+				Objects: language.Foods(),
+			},
 		},
-		Objects: language.Foods(),
-	}
-	p, err = plugin.NewPlugin(pkgName, coreaddr, trigger)
-	if err != nil {
-		l.Fatal("building", err)
-	}
-	restaurant := new(Restaurant)
-	if err := p.Register(restaurant); err != nil {
-		l.Fatal("registering", err)
+	)
+	plugin.SetStates(p, [][]dt.State{
+		[]dt.State{
+			{
+				OnEntry: func(in *dt.Msg) string {
+					return "Where are you now?"
+				},
+				OnInput: func(in *dt.Msg) {
+					p.SetMemory(in, prefs.Location, in.Sentence)
+				},
+				Complete: func(in *dt.Msg) (bool, string) {
+					return p.HasMemory(in, prefs.Location), ""
+				},
+				SkipIfComplete: true,
+			},
+			{
+				OnEntry: func(in *dt.Msg) string {
+					return "Ok. What kind of restaurant are you looking for?"
+				},
+				OnInput: func(in *dt.Msg) {
+					restaurants := recommendRestaurants(in)
+					p.SetMemory(in, "restaurantSearchResults",
+						restaurants)
+					p.SetMemory(in, "restaurantSearchResultsStrings",
+						restaurants)
+				},
+				Complete: func(in *dt.Msg) (bool, string) {
+					return p.HasMemory(in, "restaurantSearchResults"), ""
+				},
+			},
+		},
+		task.Iterate(p, "", task.OptsIterate{
+			IterableMemKey: "restaurantSearchResults",
+			ResultMemKey:   "selectedRestaurant",
+		}),
+		{
+			{
+				OnEntry: func(in *dt.Msg) string {
+					mem := p.GetMemory(in, "selectedRestaurant")
+					return "You selected " + mem.String()
+				},
+				OnInput: func(in *dt.Msg) {
+
+				},
+				Complete: func(in *dt.Msg) (bool, string) {
+					return true, ""
+				},
+			},
+		},
+	})
+	p.SM.SetOnReset(func(in *dt.Msg) {
+		p.DeleteMemory(in, "restaurantSearchResults")
+		p.DeleteMemory(in, "selectedRestaurant")
+		task.ResetIterate(p, in)
+	})
+	if err = plugin.Register(p); err != nil {
+		p.Log.Fatal("failed to register restaurants plugin.", err)
 	}
 }
 
-func (t *Restaurant) Run(m *dt.Msg, resp *string) error {
-	m.State = map[string]interface{}{
-		"query":      "",
-		"location":   "",
-		"offset":     float64(0),
-		"businesses": []interface{}{},
+func kwGetRestaurant(in *dt.Msg) string {
+	var foods string
+	for _, t := range in.Tokens {
+		_, ok := foodMap[t]
+		if ok {
+			foods += t + " "
+			continue
+		}
 	}
-	si := m.StructuredInput
-	query := ""
-	for _, o := range si.Objects {
-		query += o + " "
+	cities, _ := language.ExtractCities(p.DB, in)
+	if len(cities) > 0 {
+		p.SetMemory(in, prefs.Location, cities[0].Name)
 	}
-	m.State["query"] = query
-	loc, question, err := knowledge.GetLocation(db, m.User)
+	return ""
+}
+
+func recommendRestaurants(in *dt.Msg) []string {
+	form := url.Values{
+		"term":     {in.Sentence + " restaurant"},
+		"location": {p.GetMemory(in, prefs.Location).String()},
+		"limit":    {fmt.Sprintf("%.0f", 10)},
+	}
+	var data yelpResp
+	err := c.get("http://api.yelp.com/v2/search", form, &data)
+	if err != nil {
+		/*
+			m.Sentence = "I can't find that for you now. " +
+				"Let's try again later."
+			return err
+		*/
+		// return for confused response, given Yelp errors are rare, but
+		// unintentional runs of Yelp queries are much more common
+		return nil
+	}
+	var names []string
+	for _, biz := range data.Businesses {
+		names = append(names, biz.Name)
+	}
+	return names
+}
+
+func (c *client) get(urlStr string, params url.Values, v interface{}) error {
+	resp, err := c.client.Get(nil, &c.token, urlStr, params)
 	if err != nil {
 		return err
 	}
-	if len(question) > 0 {
-		if loc != nil && len(loc.Name) > 0 {
-			m.State["location"] = loc.Name
-		}
-		m.Sentence = question
-		return nil
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("yelp status %d", resp.StatusCode)
 	}
-	m.State["location"] = loc.Name
-	// Occurs in the case of "nearby" or other contextual place terms, where
-	// no previous context was available to expand it.
-	if len(m.State["location"].(string)) == 0 {
-		loc, question, err := knowledge.GetLocation(db, m.User)
-		if err != nil {
-			return err
-		}
-		if len(question) > 0 {
-			if loc != nil && len(loc.Name) > 0 {
-				m.State["location"] = loc.Name
-			}
-			*resp = question
-			return nil
-		}
-		m.State["location"] = loc.Name
-	}
-	if err := t.searchYelp(m, resp); err != nil {
-		return err
-	}
-	return nil
+	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// FollowUp handles dialog question/answers and additional user queries
-func (t *Restaurant) FollowUp(m *dt.Msg, resp *string) error {
-	// First we handle dialog. If we asked for a location, use the response
-	if m.State["location"] == "" {
-		// TODO smarter location detection, handling
-		m.State["location"] = m.Sentence
-		if err := t.searchYelp(m, resp); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	// If no businesses are returned inform the user now
-	if m.State["businesses"] != nil &&
-		len(m.State["businesses"].([]interface{})) == 0 {
-		*resp = "I couldn't find anything like that"
-		return nil
-	}
-
+/*
 	// Responses were returned, and the user has asked this plugin an
 	// additional query. Handle the query by keyword
 	words := strings.Fields(*resp)
@@ -204,8 +236,7 @@ func (t *Restaurant) FollowUp(m *dt.Msg, resp *string) error {
 			return nil
 		}
 	}
-	return nil
-}
+	/*
 
 func getRating(r *dt.Msg, offset int) string {
 	businesses := r.State["businesses"].([]interface{})
@@ -238,60 +269,4 @@ func getAddress(r *dt.Msg, offset int) string {
 	return dispAddr[0].(string)
 }
 
-func (c *client) get(urlStr string, params url.Values, v interface{}) error {
-	resp, err := c.client.Get(nil, &c.token, urlStr, params)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("yelp status %d", resp.StatusCode)
-	}
-	return json.NewDecoder(resp.Body).Decode(v)
-}
-
-func (t *Restaurant) searchYelp(m *dt.Msg, resp *string) error {
-	q := m.State["query"].(string)
-	loc := m.State["location"].(string)
-	offset := m.State["offset"].(float64)
-	l.Debugf("searching Yelp for %s at %s with offset %.0f", q, loc, offset)
-	form := url.Values{
-		"term":     {q},
-		"location": {loc},
-		"limit":    {fmt.Sprintf("%.0f", offset+1)},
-	}
-	var data yelpResp
-	err := c.get("http://api.yelp.com/v2/search", form, &data)
-	if err != nil {
-		/*
-			m.Sentence = "I can't find that for you now. " +
-				"Let's try again later."
-			return err
-		*/
-		// return for confused response, given Yelp errors are rare, but
-		// unintentional runs of Yelp queries are much more common
-		return nil
-	}
-	m.State["businesses"] = data.Businesses
-	if len(data.Businesses) == 0 {
-		*resp = "I couldn't find any places like that nearby."
-		return nil
-	}
-	offI := int(offset)
-	if len(data.Businesses) <= offI {
-		*resp = "That's all I could find."
-		return nil
-	}
-	b := data.Businesses[offI]
-	addr := ""
-	if len(b.Location.DisplayAddress) > 0 {
-		addr = b.Location.DisplayAddress[0]
-	}
-	if offI == 0 {
-		*resp = "Ok. How does this place look? " + b.Name +
-			" at " + addr
-	} else {
-		*resp = fmt.Sprintf("What about %s instead?", b.Name)
-	}
-	return nil
-}
+*/
