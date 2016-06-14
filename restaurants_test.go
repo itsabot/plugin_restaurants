@@ -12,6 +12,7 @@ var r *httprouter.Router
 
 func TestMain(m *testing.M) {
 	r = plugin.TestPrepare()
+	plugin.TestCleanup()
 	os.Exit(m.Run())
 }
 
