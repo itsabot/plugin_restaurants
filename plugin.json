@@ -2,5 +2,16 @@
 	"Name": "Restaurants",
 	"Maintainer": "Evan Tann <evan@itsabot.org>",
 	"Description": "Find great restaurants nearby",
-	"Icon": "https://cdn.rawgit.com/itsabot/plugin_restaurants/master/icon.svg"
+	"Icon": "https://cdn.rawgit.com/itsabot/plugin_restaurants/master/icon.svg",
+	"Usage": [
+		"Find me a nice Thai restaurant.",
+		"What's a great restaurant in LA?",
+		"Show me a ramen restaurant nearby."
+	],
+	"Settings": {
+		"YELP_CONSUMER_KEY": { "Required": true },
+		"YELP_CONSUMER_SECRET": { "Required": true },
+		"YELP_TOKEN": { "Required": true },
+		"YELP_TOKEN_SECRET": { "Required": true }
+	}
 }
